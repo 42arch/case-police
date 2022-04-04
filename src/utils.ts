@@ -1,8 +1,15 @@
 /* eslint-disable no-console */
+import { existsSync, promises as fs } from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import c from 'picocolors'
-import dictionary from '../dict.json'
+
+const DICT_FOLDER = path.resolve(fileURLToPath(import.meta.url), '../../dict')
 
 export const IGNORE_KEY = '@case-police-ignore'
+export const DISABLE_KEY = '@case-police-disable'
+
+export const IGNORE_REGEX = /@case-police-ignore\s+([^\s]+)/g
 
 export function buildRegex(dictionary: Record<string, string>): RegExp {
   const keys = Object.keys(dictionary)
@@ -10,33 +17,69 @@ export function buildRegex(dictionary: Record<string, string>): RegExp {
   return regex
 }
 
-export function replace(
+export async function replace(
   code: string,
   id: string,
-  dict: Record<string, string> = dictionary,
+  _dict?: Record<string, string>,
   regex?: RegExp,
-  disabled: string[] = [],
-): string | undefined {
-  if (code.includes(IGNORE_KEY))
+  _ignore: string[] = [],
+): Promise<string | undefined> {
+  if (code.includes(DISABLE_KEY))
     return
+
+  const dict = _dict || await loadAllPresets()
+  const ignore = _ignore.slice()
+
+  Array.from(code.matchAll(IGNORE_REGEX)).forEach((match) => {
+    const [, key] = match
+    ignore.push(...key.split(',').map(k => k.trim().toLowerCase()).filter(Boolean))
+  })
+
   regex = regex || buildRegex(dict)
   let changed = false
   code = code.replace(regex, (_, key: string, index: number) => {
     if (!key.match(/[A-Z]/) || !key.match(/[a-z]/))
       return _
     const lower = key.toLowerCase()
-    if (disabled.includes(lower))
+    if (ignore.includes(lower))
       return _
     const value = dict[lower]
     if (!value || value === key)
       return _
     changed = true
     const lines = code.slice(0, index).split('\n')
-    const line = code.slice(0, index).split('\n').length
-    const col = (lines[lines.length - 1].length || 0) + 1
+    const line = lines.length
+    const col = (lines[line - 1].length || 0) + 1
     console.log(`${c.yellow(key)} ${c.dim('→')} ${c.green(value)} \t ${c.dim(`./${id}:${line}:${col}`)}`)
     return value
   })
   if (changed)
     return code
+}
+
+export async function resolvePreset(preset: string) {
+  let result = {}
+  const file = `${preset}.json`
+  const p = path.join(DICT_FOLDER, file)
+
+  if (existsSync(p)) {
+    const content = await fs.readFile(p, 'utf-8')
+    result = {
+      ...result,
+      ...JSON.parse(content),
+    }
+  }
+  else {
+    throw new Error(`Preset "${preset}" not found`)
+  }
+
+  return result
+}
+
+export async function loadAllPresets() {
+  const files = await fs.readdir(DICT_FOLDER)
+  return Object.assign(
+    {},
+    ...await Promise.all(files.map(file => resolvePreset(file.split('.')[0]))),
+  )
 }
